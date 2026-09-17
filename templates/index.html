@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Image Master</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div>
+    <p class="eyebrow">Image Master</p>
+    <h1>Professional image object workspace</h1>
+    <p>Remove backgrounds, select objects, and export transparent PNG assets from one local studio.</p>
+  </div>
+  <button id="backHome" class="ghost hidden">← Back to home</button>
+</header>
+
+<main class="container">
+
+  <!-- HOME: feature tile grid -->
+  <section id="home" class="tile-grid">
+    <button class="tile" data-feature="bg">
+      <span class="tile-icon">🪄</span>
+      <span class="tile-title">Background Studio</span>
+      <small>Remove image backgrounds automatically</small>
+    </button>
+    <button class="tile" data-feature="click">
+      <span class="tile-icon">🎯</span>
+      <span class="tile-title">Object Picker</span>
+      <small>AI-assisted click-to-select objects</small>
+    </button>
+    <button class="tile" data-feature="auto">
+      <span class="tile-icon">✨</span>
+      <span class="tile-title">Auto Extract</span>
+      <small>Detect and export every object</small>
+    </button>
+    <button class="tile disabled" disabled>
+      <span class="tile-badge">Coming soon</span>
+      <span class="tile-icon">📈</span>
+      <span class="tile-title">Upscaler</span>
+      <small>Boost resolution of extracted objects</small>
+    </button>
+    <button class="tile disabled" disabled>
+      <span class="tile-badge">Coming soon</span>
+      <span class="tile-icon">🎬</span>
+      <span class="tile-title">Animator</span>
+      <small>Animate extracted objects</small>
+    </button>
+  </section>
+
+  <!-- WORKSPACE: upload + editor for the selected feature -->
+  <section id="workspaceView" class="hidden">
+    <section id="dropZone" class="drop-zone">
+      <div class="drop-icon">+</div>
+      <h2>Start with images or a ZIP file</h2>
+      <p>PNG, JPG, JPEG, WEBP, BMP, ZIP</p>
+      <button id="browseBtn" class="primary">Choose files</button>
+      <input id="fileInput" type="file" multiple accept="image/*,.zip" hidden>
+    </section>
+
+    <section id="workspace" class="workspace hidden">
+      <aside class="sidebar">
+        <div class="sidebar-drop" id="sidebarDrop">
+          <span>Drop files or</span>
+          <button id="addMore" class="secondary">Add more</button>
+        </div>
+        <h3>Image Queue</h3>
+        <div id="imageList"></div>
+      </aside>
+
+      <section class="editor">
+        <div class="toolbar">
+          <button data-mode="bg" class="mode active">
+            <span>Background Studio</span>
+            <small>Remove image backgrounds</small>
+          </button>
+          <button data-mode="click" class="mode">
+            <span>Object Picker</span>
+            <small>Select and export objects</small>
+          </button>
+          <button data-mode="auto" class="mode">
+            <span>Auto Extract</span>
+            <small>Detect all supported objects</small>
+          </button>
+        </div>
+
+        <div class="canvas-wrap" id="canvasWrap">
+          <div id="loading" class="loading hidden"><span class="spinner"></span> Processing…</div>
+          <img id="mainImage" alt="">
+          <canvas id="overlay"></canvas>
+        </div>
+
+        <div class="hint" id="hint">
+          Background removal runs automatically. For object selection, click objects in the image.
+        </div>
+
+        <div id="objectPanel" class="object-panel hidden">
+          <h4>Selected objects</h4>
+          <div id="objectList" class="object-list"></div>
+        </div>
+
+        <div id="results" class="results"></div>
+      </section>
+    </section>
+  </section>
+
+  <!-- HISTORY: last 10 processed images -->
+  <section id="historyPanel" class="history-panel hidden">
+    <div class="history-head">
+      <h3>Recent results</h3>
+      <button id="clearHistory" class="ghost">Clear all</button>
+    </div>
+    <div id="historyList" class="history-list"></div>
+  </section>
+
+</main>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
