@@ -4,6 +4,7 @@ import cv2
 from PIL import Image
 from ultralytics import SAM
 
+from .background import crop_transparent_content
 from .edges import feather_alpha
 
 _MODEL = None
@@ -78,7 +79,8 @@ def segment_from_points(path, points):
         raise ValueError("No object found at that point")
 
     bbox = [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
-    return {"bbox": bbox, "mask": Image.fromarray(alpha)}
+    mask = crop_transparent_content(Image.fromarray(alpha))
+    return {"bbox": bbox, "mask": mask}
 
 
 def segment_from_click(path, x, y):
@@ -92,6 +94,7 @@ def export_click_objects(path, objects, output_dir):
     for i, points in enumerate(objects, start=1):
         image, alpha = _predict_mask(path, points)
         rgba = mask_to_rgba(image, alpha)
+        rgba = crop_transparent_content(rgba)
         p = output_dir / f"selected_{i:03d}_{uuid.uuid4().hex[:8]}.png"
         rgba.save(p, "PNG")
         paths.append(p)

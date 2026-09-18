@@ -42,19 +42,93 @@ def load_history():
 
 def save_history(entries):
     HISTORY_PATH.write_text(json.dumps(entries, indent=2))
+    cleanup_output_dir()
+
+
+def cleanup_output_dir():
+    tracked = {e.get("filename") for e in load_history() if e.get("filename")}
+    if not OUTPUT_DIR.exists():
+        return
+    for item in OUTPUT_DIR.iterdir():
+        if item.name == HISTORY_PATH.name:
+            continue
+        if item.is_file() and item.name not in tracked:
+            item.unlink(missing_ok=True)
+
+
+def cleanup_uploads_on_startup():
+    if not UPLOAD_DIR.exists():
+        return
+    for item in UPLOAD_DIR.iterdir():
+        if item.is_dir():
+            shutil.rmtree(item, ignore_errors=True)
+        elif item.is_file():
+            item.unlink(missing_ok=True)
+
+
+def cleanup_uploads():
+    cleanup_uploads_on_startup()
+
+
+def delete_output_file(filename):
+    if not filename:
+        return False
+    target = (OUTPUT_DIR / secure_filename(filename)).resolve()
+    if str(target).startswith(str(OUTPUT_DIR.resolve())) and target.is_file():
+        target.unlink(missing_ok=True)
+        return True
+    return False
+
+
+def delete_upload_source(image_id, job_id=None):
+    if job_id:
+        target = (UPLOAD_DIR / job_id / image_id).resolve()
+        base = (UPLOAD_DIR / job_id).resolve()
+        if str(target).startswith(str(base)) and target.is_file():
+            target.unlink(missing_ok=True)
+            try:
+                parent = target.parent
+                while parent != base:
+                    if any(parent.iterdir()):
+                        break
+                    parent.rmdir()
+                    parent = parent.parent
+                if base.exists() and not any(base.iterdir()):
+                    base.rmdir()
+            except OSError:
+                pass
+            return True
+
+    matches = list(UPLOAD_DIR.glob(f"{image_id}.*"))
+    deleted = False
+    for match in matches:
+        if match.is_file():
+            match.unlink(missing_ok=True)
+            deleted = True
+    return deleted
 
 
 def add_history_entry(filename, mode, source_name):
+    return add_history_entries([(filename, mode, source_name)])[0]
+
+
+def add_history_entries(items):
+    # Batch all new entries into a single save so cleanup_output_dir() doesn't
+    # delete sibling files (e.g. other objects from the same auto-extract run)
+    # that haven't been recorded in history yet.
     entries = load_history()
-    entry = {
-        "id": uuid.uuid4().hex,
-        "filename": filename,
-        "url": f"/api/output/{filename}",
-        "mode": mode,
-        "source_name": source_name,
-        "created_at": time.time(),
-    }
-    entries.append(entry)
+    added = []
+    for filename, mode, source_name in items:
+        entry = {
+            "id": uuid.uuid4().hex,
+            "filename": filename,
+            "url": f"/api/output/{filename}",
+            "mode": mode,
+            "source_name": source_name,
+            "created_at": time.time(),
+        }
+        entries.append(entry)
+        added.append(entry)
     entries.sort(key=lambda e: e["created_at"])
     while len(entries) > MAX_HISTORY:
         removed = entries.pop(0)
@@ -62,7 +136,7 @@ def add_history_entry(filename, mode, source_name):
         if old_file.is_file():
             old_file.unlink(missing_ok=True)
     save_history(entries)
-    return entry
+    return added
 
 
 @app.get("/")
@@ -75,6 +149,8 @@ def upload():
     files = request.files.getlist("files")
     if not files:
         return jsonify(error="No files supplied"), 400
+
+    cleanup_uploads()
 
     results = []
     for f in files:
@@ -248,9 +324,9 @@ def api_extract_all():
 
     try:
         objects = extract_all_objects(image, OUTPUT_DIR)
-        for o in objects:
-            filename = o["url"].rsplit("/", 1)[-1]
-            add_history_entry(filename, "auto", image_id)
+        add_history_entries([
+            (o["url"].rsplit("/", 1)[-1], "auto", image_id) for o in objects
+        ])
         return jsonify(objects=objects)
     except Exception as e:
         return jsonify(error=str(e)), 500
@@ -277,9 +353,7 @@ def api_delete_history_entry(entry_id):
     removed = next((e for e in entries if e["id"] == entry_id), None)
     if removed is None:
         return jsonify(error="Not found"), 404
-    old_file = OUTPUT_DIR / removed["filename"]
-    if old_file.is_file():
-        old_file.unlink(missing_ok=True)
+    delete_output_file(removed.get("filename"))
     save_history(remaining)
     return jsonify(ok=True)
 
@@ -287,11 +361,13 @@ def api_delete_history_entry(entry_id):
 @app.delete("/api/history")
 def api_clear_history():
     for e in load_history():
-        old_file = OUTPUT_DIR / e["filename"]
-        if old_file.is_file():
-            old_file.unlink(missing_ok=True)
+        delete_output_file(e.get("filename"))
     save_history([])
     return jsonify(ok=True)
+
+
+cleanup_output_dir()
+cleanup_uploads_on_startup()
 
 
 if __name__ == "__main__":

@@ -23,8 +23,44 @@ const historyList = $("#historyList");
 let images = [];
 let current = null;
 let mode = "bg";
+let pointMode = "foreground";
 let objects = [];        // click-mode selections: [{ points:[{x,y,label}], maskUrl, bbox, tinted }]
 let activeIndex = -1;
+let processedTasks = new Map();
+
+function taskKey(img) {
+  return `${img?.job_id || "single"}:${img?.image_id || ""}`;
+}
+
+function shortId(value) {
+  const text = String(value ?? "");
+  return text.length > 10 ? text.slice(0, 10) : text;
+}
+
+function markProcessed(img, taskName) {
+  const key = taskKey(img);
+  const set = processedTasks.get(key) || new Set();
+  set.add(taskName);
+  processedTasks.set(key, set);
+}
+
+function hasProcessed(img, taskName) {
+  const key = taskKey(img);
+  return Boolean(processedTasks.get(key)?.has(taskName));
+}
+
+function syncProcessedTasksFromHistory(items) {
+  const next = new Map();
+  for (const item of items) {
+    const taskName = item.mode === "bg" ? "bg" : item.mode === "auto" ? "auto" : null;
+    if (!taskName || !item.source_name) continue;
+    const key = `${item.job_id || "single"}:${item.source_name}`;
+    const set = next.get(key) || new Set();
+    set.add(taskName);
+    next.set(key, set);
+  }
+  processedTasks = next;
+}
 
 $("#browseBtn").onclick = () => fileInput.click();
 $("#addMore").onclick = () => fileInput.click();
@@ -117,6 +153,7 @@ async function removeImage(img) {
 
   const idx = images.indexOf(img);
   if (idx >= 0) images.splice(idx, 1);
+  processedTasks.delete(taskKey(img));
 
   if (current === img) {
     current = null;
@@ -152,14 +189,21 @@ function selectImage(img) {
 
 function setMode(newMode) {
   mode = newMode;
+  pointMode = "foreground";
   $$(".mode").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
   canvasWrap.classList.toggle("clickable", mode === "click");
 
   if (mode === "bg") hint.textContent = "Automatic background removal with alpha matting.";
-  if (mode === "click") hint.textContent = "Click an object to select it (Shift+click to remove an area from the selection).";
+  if (mode === "click") hint.textContent = "Click to add a foreground point. Use background mode for exclusion points.";
   if (mode === "auto") hint.textContent = "AI segmentation detects multiple supported objects and exports separate transparent PNGs.";
 
   if (current) runCurrentMode();
+}
+
+function setPointMode(nextMode) {
+  pointMode = nextMode === "background" ? "background" : "foreground";
+  const btns = $$(".point-mode-btn");
+  btns.forEach(btn => btn.classList.toggle("active", btn.dataset.pointMode === pointMode));
 }
 
 async function runCurrentMode() {
@@ -168,8 +212,20 @@ async function runCurrentMode() {
   objects = [];
   activeIndex = -1;
   objectPanel.classList.add("hidden");
-  if (mode === "bg") await removeBG();
-  if (mode === "auto") await extractAll();
+  if (mode === "bg") {
+    if (hasProcessed(current, "bg")) {
+      results.innerHTML = "<div>Background already processed for this image.</div>";
+      return;
+    }
+    await removeBG();
+  }
+  if (mode === "auto") {
+    if (hasProcessed(current, "auto")) {
+      results.innerHTML = "<div>Auto extract already processed for this image.</div>";
+      return;
+    }
+    await extractAll();
+  }
   if (mode === "click") {
     drawObjects();
     hint.textContent = "Click an object to select it (Shift+click to remove an area). Use the panel below to manage selections.";
@@ -186,6 +242,7 @@ async function removeBG() {
       image_id: current.image_id, job_id: current.job_id
     });
     if (data.error) throw new Error(data.error);
+    markProcessed(current, "bg");
     results.innerHTML = resultCard("Background removed", data.url);
     loadHistory();
   } catch (e) { results.innerHTML = `<div>${escapeHtml(e.message)}</div>`; }
@@ -200,9 +257,11 @@ async function extractAll() {
     });
     if (data.error) throw new Error(data.error);
     if (!data.objects.length) {
+      markProcessed(current, "auto");
       results.innerHTML = "<div>No objects detected by the installed model.</div>";
       return;
     }
+    markProcessed(current, "auto");
     results.innerHTML = data.objects.map(o =>
       resultCard(`${o.label} · ${Math.round(o.confidence*100)}%`, o.url)
     ).join("");
@@ -216,6 +275,18 @@ async function extractAll() {
 function newObject() {
   objects.push({ points: [], maskUrl: null, bbox: null, tinted: null });
   activeIndex = objects.length - 1;
+  pointMode = "foreground";
+  renderObjectPanel();
+  setPointMode(pointMode);
+}
+
+function clearActiveObject() {
+  if (activeIndex < 0 || !objects[activeIndex]) return;
+  objects[activeIndex].points = [];
+  objects[activeIndex].maskUrl = null;
+  objects[activeIndex].bbox = null;
+  objects[activeIndex].tinted = null;
+  drawObjects();
   renderObjectPanel();
 }
 
@@ -269,7 +340,7 @@ overlay.addEventListener("click", async (ev) => {
   const rect = mainImage.getBoundingClientRect();
   const x = Math.round((ev.clientX - rect.left) * mainImage.naturalWidth / rect.width);
   const y = Math.round((ev.clientY - rect.top) * mainImage.naturalHeight / rect.height);
-  const label = ev.shiftKey ? 0 : 1;
+  const label = pointMode === "background" ? 0 : 1;
 
   objects[activeIndex].points.push({ x, y, label });
   await drawObjects();
@@ -282,12 +353,32 @@ function addPickerControls() {
   newBtn.textContent = "New object";
   newBtn.onclick = newObject;
 
+  const clearBtn = document.createElement("button");
+  clearBtn.className = "secondary";
+  clearBtn.textContent = "Clear current object";
+  clearBtn.onclick = clearActiveObject;
+
+  const fgBtn = document.createElement("button");
+  fgBtn.className = "secondary point-mode-btn active";
+  fgBtn.dataset.pointMode = "foreground";
+  fgBtn.textContent = "Foreground";
+  fgBtn.onclick = () => setPointMode("foreground");
+
+  const bgBtn = document.createElement("button");
+  bgBtn.className = "secondary point-mode-btn";
+  bgBtn.dataset.pointMode = "background";
+  bgBtn.textContent = "Background";
+  bgBtn.onclick = () => setPointMode("background");
+
   const exportBtn = document.createElement("button");
   exportBtn.className = "primary";
   exportBtn.textContent = "Export selected objects";
   exportBtn.onclick = exportSelected;
 
   results.appendChild(newBtn);
+  results.appendChild(clearBtn);
+  results.appendChild(fgBtn);
+  results.appendChild(bgBtn);
   results.appendChild(exportBtn);
 }
 
@@ -340,8 +431,15 @@ async function drawObjects() {
     if (!obj.tinted) {
       try { obj.tinted = await tintMask(obj.maskUrl, "#5eead4"); } catch (e) { continue; }
     }
+    const bbox = obj.bbox || [0, 0, mainImage.naturalWidth, mainImage.naturalHeight];
+    const x1 = bbox[0], y1 = bbox[1], x2 = bbox[2], y2 = bbox[3];
+    const drawX = (x1 / mainImage.naturalWidth) * rect.width;
+    const drawY = (y1 / mainImage.naturalHeight) * rect.height;
+    const drawW = ((x2 - x1 + 1) / mainImage.naturalWidth) * rect.width;
+    const drawH = ((y2 - y1 + 1) / mainImage.naturalHeight) * rect.height;
+
     ctx.globalAlpha = 0.45;
-    ctx.drawImage(obj.tinted, 0, 0, rect.width, rect.height);
+    ctx.drawImage(obj.tinted, drawX, drawY, drawW, drawH);
     ctx.globalAlpha = 1;
   }
 
@@ -395,10 +493,11 @@ async function loadHistory() {
     const data = await res.json();
     const items = data.history || [];
     historyPanel.classList.toggle("hidden", items.length === 0);
+    syncProcessedTasksFromHistory(items);
     historyList.innerHTML = items.map(h => `
       <div class="history-card" data-id="${h.id}">
         <img src="${h.url}">
-        <div class="meta">${escapeHtml(h.mode)} · ${escapeHtml(h.source_name || "")}</div>
+        <div class="meta">${escapeHtml(h.mode)} · ${escapeHtml(shortId(h.source_name || ""))}</div>
         <div class="history-actions">
           <button class="post-process" disabled title="Coming soon">Post-process ▾</button>
           <a href="${h.url}" download><button>Download</button></a>
