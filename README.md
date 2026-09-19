@@ -29,7 +29,7 @@ The model downloads automatically on its first use.
 ### Click selection
 The first version uses OpenCV GrabCut so the project has no mandatory large segmentation checkpoint.
 
-For a later quality upgrade, replace `processing/click_segment.py` with MobileSAM/SAM-based prompting. The frontend/API already separates this functionality.
+Click selection uses MobileSAM through `processing/click_segment.py`. The model checkpoint is loaded on the first segmentation request.
 
 ## Windows setup
 
@@ -46,13 +46,13 @@ python app.py
 Then open:
 
 ```text
-http://127.0.0.1:5000
+http://127.0.0.1:5012
 ```
 
 For access from another device on your LAN:
 
 ```text
-http://YOUR-PC-IP:5000
+http://YOUR-PC-IP:5012
 ```
 
 ## GPU note
@@ -66,6 +66,17 @@ python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_
 ```
 
 If it says `False`, the app still works, but inference will run on CPU.
+
+If an NVIDIA GPU is installed but the check reports `False`, the current Python environment has a CPU-only PyTorch build. Reinstall PyTorch with a CUDA build, then restart the app:
+
+```powershell
+python -m pip uninstall -y torch torchvision torchaudio
+python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+```
+
+The upscaler selects CUDA automatically when `torch.cuda.is_available()` is `True`; otherwise it uses CPU.
+Background removal selects ONNX Runtime `1.24.1`'s `CUDAExecutionProvider` when available, and MobileSAM uses CUDA device `0` when Torch reports CUDA support. On Windows, the app exposes the CUDA DLLs bundled with PyTorch to ONNX Runtime automatically.
 
 For a GTX 1650, start with the small models and process one image at a time.
 

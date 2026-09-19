@@ -1,3 +1,4 @@
+
 from pathlib import Path
 import uuid
 
@@ -12,6 +13,7 @@ BORDER_MARGIN_RATIO = 0.02
 PADDING_RATIO = 0.04
 TARGET_SIZE = (512, 512)
 MIN_DISTANCE_FLOOR = 12  # keep Otsu from collapsing near-zero on very flat/plain backgrounds
+CHROMA_TOLERANCE = 85
 
 
 def _fit_background_plane(image_bgr):
@@ -98,6 +100,36 @@ def _foreground_mask(image_bgr, bg_plane):
     return filled
 
 
+def _chroma_distance(image_bgr, key_color):
+    key_patch = np.uint8([[key_color]])
+    key_lab = cv2.cvtColor(key_patch, cv2.COLOR_BGR2LAB).astype(np.float32)[0, 0]
+    image_lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    return np.linalg.norm(image_lab - key_lab, axis=2)
+
+
+def _chroma_key_mask(image_bgr, key_color, tolerance=CHROMA_TOLERANCE):
+    """Build a foreground mask by removing pixels close to the picked key color."""
+    distance = _chroma_distance(image_bgr, key_color)
+    mask = (distance > tolerance).astype(np.uint8) * 255
+
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    filled = np.zeros_like(mask)
+    if contours:
+        cv2.drawContours(filled, contours, -1, 255, thickness=cv2.FILLED)
+    return filled
+
+
+def _chroma_key_alpha(image_bgr, key_color, tolerance=CHROMA_TOLERANCE):
+    """Return per-pixel transparency so keyed colors disappear inside objects too."""
+    distance = _chroma_distance(image_bgr, key_color)
+    soft_start = max(0, tolerance - 12)
+    alpha = np.clip((distance - soft_start) / max(1, tolerance - soft_start) * 255, 0, 255)
+    return alpha.astype(np.uint8)
+
+
 def _decontaminate_edges(crop_bgr, alpha, bg_crop):
     """Remove background color bleed from semi-transparent edge pixels."""
     alpha_f = alpha.astype(np.float32) / 255.0
@@ -106,19 +138,80 @@ def _decontaminate_edges(crop_bgr, alpha, bg_crop):
         return crop_bgr
 
     crop_f = crop_bgr.astype(np.float32)
-    denom = np.clip(alpha_f, 0.35, 1.0)[..., None]
+    # Full color unmixing is unstable on nearly transparent pixels: a small
+    # error in the estimated background gets amplified and can turn a green
+    # screen edge magenta. Apply it only toward the opaque side of the rim and
+    # blend the correction back into the source at the outer edge.
+    correction_strength = np.clip((alpha_f - 0.18) / 0.62, 0.0, 1.0)[..., None]
+    denom = np.clip(alpha_f, 0.5, 1.0)[..., None]
     decontaminated = (crop_f - (1 - alpha_f[..., None]) * bg_crop) / denom
-    result = np.where(edge[..., None], np.clip(decontaminated, 0, 255), crop_f)
+    decontaminated = np.clip(decontaminated, 0, 255)
+    corrected = crop_f + (decontaminated - crop_f) * correction_strength
+    result = np.where(edge[..., None], np.clip(corrected, 0, 255), crop_f)
     return result.astype(np.uint8)
 
 
-def _normalize_object_crop(rgba, target_size):
+def _refine_object_mask(crop_bgr, object_mask):
+    """Refine a color-derived contour before feathering its alpha edge."""
+    if cv2.countNonZero(object_mask) == 0:
+        return object_mask
+
+    sure_foreground = cv2.erode(object_mask, np.ones((7, 7), np.uint8), iterations=1)
+    if cv2.countNonZero(sure_foreground) == 0:
+        return object_mask
+
+    grabcut_mask = np.full(object_mask.shape, cv2.GC_BGD, dtype=np.uint8)
+    grabcut_mask[object_mask > 0] = cv2.GC_PR_FGD
+    grabcut_mask[sure_foreground > 0] = cv2.GC_FGD
+
+    background_model = np.zeros((1, 65), np.float64)
+    foreground_model = np.zeros((1, 65), np.float64)
+    try:
+        cv2.grabCut(
+            crop_bgr,
+            grabcut_mask,
+            None,
+            background_model,
+            foreground_model,
+            3,
+            cv2.GC_INIT_WITH_MASK,
+        )
+    except cv2.error:
+        return object_mask
+
+    refined = np.where(
+        (grabcut_mask == cv2.GC_FGD) | (grabcut_mask == cv2.GC_PR_FGD),
+        255,
+        0,
+    ).astype(np.uint8)
+    refined = cv2.morphologyEx(refined, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    return refined
+
+
+def _normalize_object_crop(rgba, target_size, border_thickness=0.0):
     h, w = rgba.shape[:2]
     target_w, target_h = target_size
     scale = min(target_w / max(1, w), target_h / max(1, h))
     new_w = max(1, int(round(w * scale)))
     new_h = max(1, int(round(h * scale)))
     resized = cv2.resize(rgba, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+
+    # Add a one-pixel antialiased outline around the visible object silhouette.
+    alpha = resized[:, :, 3]
+    if border_thickness > 0:
+        binary = (alpha > 127).astype(np.uint8)
+        outside_distance = cv2.distanceTransform(1 - binary, cv2.DIST_L2, 5)
+        ring = np.clip(
+            (border_thickness - outside_distance)
+            / max(border_thickness, 0.01)
+            * 255,
+            0,
+            255,
+        ).astype(np.uint8)
+        ring = cv2.GaussianBlur(ring, (0, 0), 0.55)
+        outline = (alpha < 240) & (ring > 0)
+        resized[outline, :3] = 0
+        resized[outline, 3] = np.maximum(alpha[outline], ring[outline])
 
     canvas = np.zeros((target_h, target_w, 4), dtype=np.uint8)
     dx = (target_w - new_w) // 2
@@ -127,13 +220,21 @@ def _normalize_object_crop(rgba, target_size):
     return canvas
 
 
-def extract_all_objects(src: Path, output_dir: Path):
+def extract_all_objects(
+    src: Path,
+    output_dir: Path,
+    chroma_key=False,
+    chroma_color=(0, 255, 0),
+    chroma_tolerance=CHROMA_TOLERANCE,
+    border_thickness=0.0,
+):
     image = cv2.imread(str(src), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError("Could not read image")
 
     bg_plane = _fit_background_plane(image)
-    mask = _foreground_mask(image, bg_plane)
+    mask = _chroma_key_mask(image, chroma_color, chroma_tolerance) if chroma_key else _foreground_mask(image, bg_plane)
+    chroma_alpha = _chroma_key_alpha(image, chroma_color, chroma_tolerance) if chroma_key else None
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     min_area = MIN_AREA_RATIO * image.shape[0] * image.shape[1]
@@ -157,14 +258,17 @@ def extract_all_objects(src: Path, output_dir: Path):
         if obj_mask.size == 0:
             continue
 
-        # Shrink the mask by a pixel before feathering so background-tinted
-        # rim pixels (source of green/color fringing) aren't kept as "inside".
+        crop_bgr = image[y1:y2, x1:x2]
+        # Refine the contour while the source color is still available. This
+        # removes probable background pixels inside a hard color-derived rim.
+        obj_mask = _refine_object_mask(crop_bgr, obj_mask)
         obj_mask = cv2.erode(obj_mask, np.ones((3, 3), np.uint8), iterations=1)
         if cv2.countNonZero(obj_mask) < min_area:
             continue
 
         alpha = feather_alpha(obj_mask, feather=4)
-        crop_bgr = image[y1:y2, x1:x2]
+        if chroma_alpha is not None:
+            alpha = np.minimum(alpha, chroma_alpha[y1:y2, x1:x2])
         crop_bgr = _decontaminate_edges(crop_bgr, alpha, bg_plane[y1:y2, x1:x2])
         rgba = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGBA)
         rgba[:, :, 3] = alpha
@@ -177,7 +281,7 @@ def extract_all_objects(src: Path, output_dir: Path):
 
         filename = f"{uuid.uuid4().hex}_object.png"
         out = output_dir / filename
-        normalized = _normalize_object_crop(rgba, TARGET_SIZE)
+        normalized = _normalize_object_crop(rgba, TARGET_SIZE, border_thickness)
         Image.fromarray(normalized).save(out, "PNG")
 
         objects.append({

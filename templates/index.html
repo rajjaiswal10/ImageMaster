@@ -35,17 +35,15 @@
       <span class="tile-title">Auto Extract</span>
       <small>Detect and export every object</small>
     </button>
-    <button class="tile disabled" disabled>
-      <span class="tile-badge">Coming soon</span>
+    <button class="tile" data-feature="upscale">
       <span class="tile-icon">📈</span>
       <span class="tile-title">Upscaler</span>
-      <small>Boost resolution of extracted objects</small>
+      <small>2x upscale with repaired edges and cleaner detail</small>
     </button>
-    <button class="tile disabled" disabled>
-      <span class="tile-badge">Coming soon</span>
+    <button class="tile" data-feature="animator">
       <span class="tile-icon">🎬</span>
       <span class="tile-title">Animator</span>
-      <small>Animate extracted objects</small>
+      <small>Stack images into a GIF or video</small>
     </button>
   </section>
 
@@ -66,7 +64,7 @@
           <button id="addMore" class="secondary">Add more</button>
         </div>
         <h3>Image Queue</h3>
-        <div id="imageList"></div>
+        <div id="imageList" aria-label="Image queue drop area"></div>
       </aside>
 
       <section class="editor">
@@ -83,6 +81,14 @@
             <span>Auto Extract</span>
             <small>Detect all supported objects</small>
           </button>
+          <button data-mode="upscale" class="mode">
+            <span>2x Upscale</span>
+            <small>Improve detail and repair edges</small>
+          </button>
+          <button data-mode="animator" class="mode">
+            <span>Animator</span>
+            <small>Preview and export image frames</small>
+          </button>
         </div>
 
         <div class="canvas-wrap" id="canvasWrap">
@@ -92,7 +98,48 @@
         </div>
 
         <div class="hint" id="hint">
-          Background removal runs automatically. For object selection, click objects in the image.
+          Select a process and click Run when you're ready.
+        </div>
+
+        <div id="upscaleControls" class="upscale-controls hidden" aria-label="Upscale mode">
+          <label><input type="radio" name="upscaleMode" value="ai" checked> AI upscale</label>
+          <label><input type="radio" name="upscaleMode" value="normal"> Smooth normal</label>
+        </div>
+
+        <div id="chromaControls" class="chroma-controls hidden" aria-label="Chroma key settings">
+          <label class="toggle-label"><input id="chromaKeyToggle" type="checkbox"> Pure chroma key</label>
+          <label class="color-label" for="chromaColor">Key color <input id="chromaColor" type="color" value="#00ff00" title="Choose the background color to remove"></label>
+          <label class="range-label" for="borderThickness">Border <output id="borderThicknessValue">0.00 pt</output><input id="borderThickness" type="range" min="0" max="0.50" step="0.01" value="0"></label>
+          <label class="range-label" for="chromaTolerance">Tolerance <output id="chromaToleranceValue">85</output><input id="chromaTolerance" type="range" min="1" max="150" step="1" value="85"></label>
+        </div>
+
+        <section id="animatorPanel" class="animator-panel hidden" aria-label="Animation controls">
+          <div class="animator-preview-wrap">
+            <div id="animationEmpty" class="muted">Add at least two images to preview the animation.</div>
+            <img id="animationPreview" class="hidden" alt="Animation preview">
+            <video id="animationVideo" class="hidden" controls loop muted></video>
+          </div>
+          <div class="animation-library-head">
+            <h4>Animation frames</h4>
+            <button id="clearAnimationFrames" class="ghost">Start new animation</button>
+          </div>
+          <div id="animationFrames" class="animation-frames"></div>
+          <div class="animation-library-head">
+            <h4>Available images</h4>
+            <span class="muted">Reusable source images</span>
+          </div>
+          <div id="animationLibrary" class="animation-library"></div>
+          <div class="animator-controls">
+            <label class="range-label" for="animationInterval">Interval <output id="animationIntervalValue">0.5 sec</output><input id="animationInterval" type="range" min="0.1" max="2" step="0.1" value="0.5"></label>
+            <label>Output <select id="animationFormat"><option value="gif">GIF</option><option value="mp4">MP4 video</option></select></label>
+            <label class="smooth-toggle"><input id="animationSmooth" type="checkbox" checked> Smooth crossfade</label>
+            <button id="buildAnimation" class="primary">Create animation</button>
+          </div>
+          <div id="animationResult" class="animation-result"></div>
+        </section>
+
+        <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
+          <button id="runCurrentTask" class="primary hidden">Run</button>
         </div>
 
         <div id="objectPanel" class="object-panel hidden">
@@ -100,10 +147,33 @@
           <div id="objectList" class="object-list"></div>
         </div>
 
+        <div id="clickControls" class="click-controls hidden"></div>
         <div id="results" class="results"></div>
       </section>
     </section>
   </section>
+
+  <div id="queueMenu" class="queue-menu hidden">
+    <button data-action="crop">Crop image</button>
+    <button data-action="duplicate">Duplicate image</button>
+  </div>
+
+  <div id="cropDialog" class="crop-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="cropTitle">
+    <div class="crop-dialog-card">
+      <div class="crop-dialog-head">
+        <h3 id="cropTitle">Crop image</h3>
+        <button id="closeCrop" class="ghost" aria-label="Close crop dialog">×</button>
+      </div>
+      <div id="cropStage" class="crop-stage">
+        <img id="cropImage" alt="Crop preview">
+        <div id="cropSelection" class="crop-selection hidden"></div>
+      </div>
+      <div class="crop-dialog-actions">
+        <button id="cancelCrop" class="ghost">Cancel</button>
+        <button id="applyCrop" class="primary">Crop and add</button>
+      </div>
+    </div>
+  </div>
 
   <!-- HISTORY: last 10 processed images -->
   <section id="historyPanel" class="history-panel hidden">

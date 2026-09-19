@@ -1,6 +1,7 @@
 import uuid
 import numpy as np
 import cv2
+import torch
 from PIL import Image
 from ultralytics import SAM
 
@@ -47,7 +48,8 @@ def _predict_mask(path, points):
             raise ValueError("Click is outside the image")
 
     model = _model()
-    results = model.predict(source=str(path), points=[xy], labels=[labels], verbose=False)
+    device = 0 if torch.cuda.is_available() else "cpu"
+    results = model.predict(source=str(path), points=[xy], labels=[labels], device=device, verbose=False)
     result = results[0]
     if result.masks is None or len(result.masks.data) == 0:
         raise ValueError("No object found at that point")

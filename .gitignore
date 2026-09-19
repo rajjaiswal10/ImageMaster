@@ -5,3 +5,4 @@ uploads/*
 outputs/*
 *.pt
 .env
+tests/*
